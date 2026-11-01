@@ -148,7 +148,7 @@ object CarFloatHook {
                 appWindowManager().updateViewLayout(container, buildParams(x, y, w, h))
                 // 内容全幅跟随画框：requestLayout 让 Compose 按新尺寸重组
                 //（width>height 时走双栏横版，MeloX 页面自身响应窗口尺寸）
-                c.requestLayout()
+                cur.requestLayout()
                 floatingRect = intArrayOf(x, y, w, h)
                 reply(ACTION_FLOATED)
                 Log.i(TAG, "悬浮窗重定位 rect($x,$y,$w,$h)")
