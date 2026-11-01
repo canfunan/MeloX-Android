@@ -104,11 +104,36 @@ object CarFloatHook {
         } catch (t: Throwable) {
             Log.w(TAG, "协议注册失败: ${t.message}")
         }
+        // 保活前台服务：进程有 FGS 载体，冻结引擎不碰（无 root 方案的核心——
+        // greezer 冻结 = showmap 被 SKIPPED，实测 MeloX 裸进程秒冻协议全瘫）
+        try {
+            CarFloatKeepService.ensure(application)
+        } catch (t: Throwable) {
+            Log.w(TAG, "保活服务拉起失败: ${t.message}")
+        }
     }
 
     /** showmap（w/h = 右下角坐标语义，海鸥按猴哥协议发）。 */
     private fun onShowMap(x: Int, y: Int, right: Int, bottom: Int) {
         val a = app ?: return reply(ACTION_NOVIEW)
+
+        // 无悬浮权限：正常用户路径 —— 自动跳系统授权页（用户点一次「允许」，
+        // 之后全程自动）。跳页前回 noview 让海鸥先收起槽卡别挡着授权对话框。
+        if (!canDrawOverlays(a)) {
+            Log.i(TAG, "showmap：无悬浮权限，跳授权页")
+            reply(ACTION_NOVIEW)
+            try {
+                val i = Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:${a.packageName}")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                a.startActivity(i)
+            } catch (t: Throwable) {
+                Log.w(TAG, "跳授权页失败: ${t.message}")
+            }
+            return
+        }
+
         val w = right - x
         val h = bottom - y
         if (w <= 0 || h <= 0) return reply(ACTION_NOVIEW)
@@ -226,6 +251,13 @@ object CarFloatHook {
         lp.y = y
         return lp
     }
+
+    private fun canDrawOverlays(ctx: Context): Boolean =
+        try {
+            android.provider.Settings.canDrawOverlays(ctx)
+        } catch (_: Throwable) {
+            false
+        }
 
     private fun appWindowManager(): WindowManager {
         wmApp?.let { return it }

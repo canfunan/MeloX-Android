@@ -163,6 +163,13 @@
             </intent-filter>
         </service>
 
+        <!-- 车机悬浮保活（海鸥桌面联动）：进程常驻 FGS 载体，冻结引擎不碰，
+             showmap 广播随时可达（greezer 对裸进程秒冻，协议全瘫——实测教训） -->
+        <service
+            android:name=".carfloat.CarFloatKeepService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <service
             android:name=".platform.floating.MeloXFloatingLyricsService"
             android:exported="false"
