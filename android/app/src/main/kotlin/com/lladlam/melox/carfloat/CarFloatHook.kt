@@ -45,13 +45,6 @@ object CarFloatHook {
     private const val FLAG_FLOAT = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL   // 0x120，payload 同款
 
-    /**
-     * 16:9 横屏布局规范（对标 QQ 音乐车机版风格）：悬浮矩形内内容强制 16:9
-     * 居中取景，容器深色底补边 —— 画框任何形状下 MeloX 都按标准车机横版渲染，
-     * Compose 按 16:9 宽度走 list-detail 双栏（width>height 恒成立）。
-     */
-    private fun fit169(w: Int, h: Int): IntArray =
-        if (w * 9 >= h * 16) intArrayOf(h * 16 / 9, h) else intArrayOf(w, w * 9 / 16)
 
     @Volatile private var app: Application? = null
     @Volatile private var topActivity: Activity? = null
@@ -153,12 +146,12 @@ object CarFloatHook {
             }
             try {
                 appWindowManager().updateViewLayout(container, buildParams(x, y, w, h))
-                // 内容同步到新矩形的 16:9 取景框
-                val fit = fit169(w, h)
-                cur.layoutParams = FrameLayout.LayoutParams(fit[0], fit[1], Gravity.CENTER)
+                // 内容全幅跟随画框：requestLayout 让 Compose 按新尺寸重组
+                //（width>height 时走双栏横版，MeloX 页面自身响应窗口尺寸）
+                c.requestLayout()
                 floatingRect = intArrayOf(x, y, w, h)
                 reply(ACTION_FLOATED)
-                Log.i(TAG, "悬浮窗重定位 rect($x,$y,$w,$h) 16:9=${fit[0]}x${fit[1]}")
+                Log.i(TAG, "悬浮窗重定位 rect($x,$y,$w,$h)")
             } catch (t: Throwable) {
                 Log.w(TAG, "重定位失败: ${t.message}")
                 reply(ACTION_NOVIEW)
@@ -185,11 +178,12 @@ object CarFloatHook {
             // 1) 内容从原父容器摘出
             parent.removeView(c)
             originalParent = parent
-            // 2) 自建深色容器（QQ 车机风格底色），内容按 16:9 居中取景（车机规范）
+            // 2) 自建深色容器（QQ 车机风格底色），内容【全幅】跟随画框（payload 同款
+            //    MATCH_PARENT）—— 画框多大界面多大；窗口横 = Compose 自动双栏横版
             val box = FrameLayout(act)
             box.background = ColorDrawable(Color.parseColor("#0E1114"))
-            val fit = fit169(w, h)
-            box.addView(c, FrameLayout.LayoutParams(fit[0], fit[1], Gravity.CENTER))
+            box.addView(c, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             // payload 同款收尾：去掉系统栏 inset 残留（悬浮矩形里内容要满幅）
             c.fitsSystemWindows = false
             c.setPadding(0, 0, 0, 0)
