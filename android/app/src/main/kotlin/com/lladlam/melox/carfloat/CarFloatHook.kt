@@ -16,6 +16,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 /**
  * 车机悬浮协议（逐字对齐星环注入器 payload 的 FloatWindow 权威实现，
@@ -217,11 +220,12 @@ object CarFloatHook {
             // ComposeView attach 时解析 recomposer 直接 IllegalStateException
             // （实测崩点：悬浮成功 30ms 后进程死）。挂一套自持 RESUMED 的宿主，
             // 同时保证宿主 Activity 在后台时悬浮画面照常重组渲染。
-            // lifecycle 2.10 KMP：编译期只有 Kotlin 扩展函数（Java 静态类仅运行时兼容壳）
+            // lifecycle 2.10 KMP：这三个是 Kotlin 扩展函数（全限定调用不合法，
+            // 必须 import + 接收者语法；javap 实锤编译产物 = 类内静态 set）
             val owners = FloatOwners()
-            androidx.lifecycle.setViewTreeLifecycleOwner(box, owners)
-            androidx.lifecycle.setViewTreeViewModelStoreOwner(box, owners)
-            androidx.savedstate.setViewTreeSavedStateRegistryOwner(box, owners)
+            box.setViewTreeLifecycleOwner(owners)
+            box.setViewTreeViewModelStoreOwner(owners)
+            box.setViewTreeSavedStateRegistryOwner(owners)
             // 3) 容器挂系统悬浮窗（payload 同款参数：可聚焦，输入法可用）
             appWindowManager().addView(box, buildParams(x, y, w, h))
             container = box
