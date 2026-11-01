@@ -67,9 +67,15 @@ import com.lladlam.melox.ui.podcast.MeloXPodcastScreen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-/** Window aspect ratio, deliberately independent of device type and width classes. */
+/** Window aspect ratio, deliberately independent of device type and width classes.
+ *  ★双栏绝对宽度门槛（600dp）：悬浮窗（海鸥画框 ≈390dp 宽）虽然是横的，
+ *  也塞不下两栏 —— 画面挤成一团（用户实测）。只有 ≥600dp 的横窗
+ *  （平板全屏横屏 ≈800dp+）才开双栏；小横窗回落单栏，界面完整舒展。 */
+internal const val MELOX_LIST_DETAIL_MIN_WIDTH_DP = 600
+
 internal fun meloXUsesListDetail(size: IntSize, enabled: Boolean = true): Boolean =
-    enabled && size.height > 0 && size.width > size.height
+    enabled && size.height > 0 && size.width > size.height &&
+        size.width >= MELOX_LIST_DETAIL_MIN_WIDTH_DP
 
 internal val LocalMeloXPaneSize = staticCompositionLocalOf<IntSize?> { null }
 internal val LocalMeloXListDetail = staticCompositionLocalOf { false }
@@ -146,7 +152,8 @@ internal fun Context.openMeloXDetailPage(intent: Intent): Boolean {
         else -> false
     }
     if (settingsPage &&
-        (!MeloXSettingsRuntime.splitScreenEnabled || config.screenWidthDp <= config.screenHeightDp)) return false
+        (!MeloXSettingsRuntime.splitScreenEnabled || config.screenWidthDp <= config.screenHeightDp ||
+            config.screenWidthDp < MELOX_LIST_DETAIL_MIN_WIDTH_DP)) return false
     var current = this
     while (true) {
         if (current is MeloXDetailPageOwner) {
