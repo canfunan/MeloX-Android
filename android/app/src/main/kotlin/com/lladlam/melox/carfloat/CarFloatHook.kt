@@ -52,6 +52,30 @@ object CarFloatHook {
     @Volatile private var content: View? = null
     @Volatile private var originalParent: ViewGroup? = null
     @Volatile private var floatingRect: IntArray? = null
+    @Volatile private var ownersRef: FloatOwners? = null
+
+    /**
+     * 悬浮窗口树的自持宿主：生命周期恒 RESUMED（宿主 Activity 在后台时悬浮 UI
+     * 照常重组），SavedStateRegistry / ViewModelStore 就位（ComposeView 解析
+     * recomposer 与 rememberSaveable 的硬性依赖）。
+     */
+    private class FloatOwners : androidx.lifecycle.LifecycleOwner,
+            androidx.savedstate.SavedStateRegistryOwner,
+            androidx.lifecycle.ViewModelStoreOwner {
+        private val registry = androidx.lifecycle.LifecycleRegistry(this)
+        private val savedState = androidx.savedstate.SavedStateRegistryController.create(this)
+        private val store = androidx.lifecycle.ViewModelStore()
+
+        init {
+            savedState.performRestore(null)
+            registry.currentState = androidx.lifecycle.Lifecycle.State.RESUMED
+        }
+
+        override fun getLifecycle(): androidx.lifecycle.Lifecycle = registry
+        override fun getSavedStateRegistry(): androidx.savedstate.SavedStateRegistry =
+            savedState.savedStateRegistry
+        override fun getViewModelStore(): androidx.lifecycle.ViewModelStore = store
+    }
 
     fun install(application: Application) {
         app = application
@@ -184,13 +208,22 @@ object CarFloatHook {
             box.background = ColorDrawable(Color.parseColor("#0E1114"))
             box.addView(c, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            // payload 同款收尾：去掉系统栏 inset 残留（悬浮矩形里内容要满幅）
+            // payload 收尾：去掉系统栏 inset 残留（悬浮矩形里内容要满幅）
             c.fitsSystemWindows = false
             c.setPadding(0, 0, 0, 0)
+            // Compose 跨窗口必需：新窗口树没有 ViewTreeLifecycleOwner →
+            // ComposeView attach 时解析 recomposer 直接 IllegalStateException
+            // （实测崩点：悬浮成功 30ms 后进程死）。挂一套自持 RESUMED 的宿主，
+            // 同时保证宿主 Activity 在后台时悬浮画面照常重组渲染。
+            val owners = FloatOwners()
+            androidx.lifecycle.ViewTreeLifecycleOwner.set(box, owners)
+            androidx.lifecycle.ViewTreeViewModelStoreOwner.set(box, owners)
+            androidx.savedstate.ViewTreeSavedStateRegistryOwner.set(box, owners)
             // 3) 容器挂系统悬浮窗（payload 同款参数：可聚焦，输入法可用）
             appWindowManager().addView(box, buildParams(x, y, w, h))
             container = box
             content = c
+            ownersRef = owners
             floatingRect = intArrayOf(x, y, w, h)
             reply(ACTION_FLOATED)
             Log.i(TAG, "悬浮成功 rect($x,$y,$w,$h)，已回 ACK")
@@ -231,6 +264,7 @@ object CarFloatHook {
         container = null
         floatingRect = null
         originalParent = null
+        ownersRef = null
         if (box != null) {
             try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
             try { box.removeAllViews() } catch (_: Throwable) {}
@@ -255,6 +289,7 @@ object CarFloatHook {
         container = null
         floatingRect = null
         originalParent = null
+        ownersRef = null
         if (box != null) {
             try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
             try { box.removeAllViews() } catch (_: Throwable) {}
