@@ -54,6 +54,15 @@ object CarFloatHook {
             }
             override fun onActivityDestroyed(activity: Activity) {
                 if (topActivity === activity) topActivity = null
+                // 宿主销毁时还浮着 → decor 已无处可还，摘掉防泄漏
+                if (floatingView != null && activity.window?.decorView === floatingView) {
+                    try {
+                        appWindowManager().removeViewImmediate(floatingView!!)
+                    } catch (_: Throwable) {
+                    }
+                    floatingView = null
+                    floatingRect = null
+                }
             }
             override fun onActivityCreated(a: Activity, s: android.os.Bundle?) = Unit
             override fun onActivityStarted(a: Activity) = Unit
@@ -131,9 +140,16 @@ object CarFloatHook {
                 Log.i(TAG, "悬浮窗重定位 rect($x,$y,${x + w},${y + h})")
                 return
             }
-            // 摘出 Activity 窗口 → 挂成系统悬浮窗（同进程 WindowManagerGlobal，
-            // remove+add 对 Activity 的 decorView 成立；Compose 界面原样保留）
-            (decor.parent as? WindowManager)?.removeViewImmediate(decor)
+            // 摘出 Activity 窗口 → 挂成系统悬浮窗。
+            // ⚠ decor.parent 是 ViewRootImpl 不是 WindowManager（强转永远 null =
+            //   removeView 没执行 = addView 炸 "already been added"）。
+            // WindowManager 在同进程内是全局单例（WindowManagerGlobal），
+            // 用应用的 WindowManager 实例就能摘掉 Activity 窗口里的 decor。
+            try {
+                appWindowManager().removeViewImmediate(decor)
+            } catch (t: Throwable) {
+                Log.w(TAG, "摘窗异常（继续尝试挂悬浮）: ${t.message}")
+            }
             val lp = buildParams(x, y, w, h)
             appWindowManager().addView(decor, lp)
             floatingView = decor
@@ -179,9 +195,15 @@ object CarFloatHook {
                 Log.w(TAG, "还窗失败（重建 Activity 兜底）: ${t.message}")
             }
         }
-        try {
-            act?.recreate()
-        } catch (_: Throwable) {
+        // 没有活的 Activity 宿主（被 ROM 杀了/销毁了）→ decor 已无处可还，
+        // 直接丢弃引用；界面由 Activity 下次启动自然重建
+        if (act == null) {
+            Log.i(TAG, "无 Activity 宿主，悬浮 decor 丢弃（等下次启动重建界面）")
+        } else {
+            try {
+                act.recreate()
+            } catch (_: Throwable) {
+            }
         }
     }
 
