@@ -33,6 +33,9 @@ class MeloXApplication : Application() {
         MeloXSystemScale.install(this)
         registerActivityLifecycleCallbacks(MeloXAppVisibility)
         registerComponentCallbacks(MeloXMemoryCallbacks)
+        // 车机悬浮协议（海鸥悬浮桌面 showmap 指挥，星环同款）：
+        // 收 showmap 把界面摘进系统悬浮窗 + 回 floated ACK；回前台自动收悬浮还窗
+        com.lladlam.melox.carfloat.CarFloatHook.install(this)
     }
 }
 
