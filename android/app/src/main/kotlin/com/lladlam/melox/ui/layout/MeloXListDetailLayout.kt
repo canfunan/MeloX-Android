@@ -222,7 +222,8 @@ internal fun MeloXListDetailLayout(
     content: @Composable () -> Unit,
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
-    val split = meloXUsesListDetail(windowSize, MeloXSettingsRuntime.splitScreenEnabled)
+    val split = meloXUsesListDetail(windowSize, MeloXSettingsRuntime.splitScreenEnabled) &&
+        !com.lladlam.melox.carfloat.CarFloatHook.isFloating.value
     val context = LocalContext.current
     val divider = MaterialTheme.colorScheme.outlineVariant
     BoxWithConstraints(Modifier.fillMaxSize()) {

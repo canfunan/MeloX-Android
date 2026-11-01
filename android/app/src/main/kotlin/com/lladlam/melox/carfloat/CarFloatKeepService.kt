@@ -40,6 +40,22 @@ class CarFloatKeepService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 直投通道（海鸥 startService）：binder 调用穿透 greezer 冻结（THAW reason:
+        // check_binder），矩形参数原样走 extras —— 冻结状态下广播被 Greezer Denial
+        // SKIPPED，这条路是唯一可靠通道。onStartCommand 在主线程，view 操作合法。
+        if (intent?.`action` == ACTION_FLOAT) {
+            try {
+                if (intent.getBooleanExtra("close", false)) {
+                    CarFloatHook.close()
+                } else {
+                    CarFloatHook.show(
+                        intent.getIntExtra("x", 0), intent.getIntExtra("y", 0),
+                        intent.getIntExtra("w", 0), intent.getIntExtra("h", 0))
+                }
+            } catch (t: Throwable) {
+                Log.w("MeloXCarFloat", "直投处理失败: ${t.message}")
+            }
+        }
         // START_STICKY：被系统杀掉后自动重启，保活链不断
         return START_STICKY
     }
@@ -67,6 +83,9 @@ class CarFloatKeepService : Service() {
     companion object {
         private const val CH_ID = "melox_carfloat_keep"
         private const val NOTI_ID = 0xC8F1
+
+        /** 海鸥直投协议 action（服务 intent-filter 同名注册，海鸥 setPackage 定向投递）。 */
+        const val ACTION_FLOAT = "com.melox.carfloat.FLOAT"
 
         /** 应用前台时拉起（MainActivity.onCreate 调，前台启动 FGS 不受后台限制）。 */
         fun ensure(ctx: Context) {

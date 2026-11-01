@@ -48,6 +48,22 @@ object CarFloatHook {
     private const val FLAG_FLOAT = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL   // 0x120，payload 同款
 
+    /**
+     * 悬浮态开关（Compose 可观察）：UI 层所有双栏判定必须 && !isFloating.value ——
+     * 悬浮画框里永远单栏（播放页双栏右栏空态 = 大音乐图标，用户点名最丑）。
+     */
+    val isFloating = androidx.compose.runtime.mutableStateOf(false)
+
+    /** 服务直投入口（CarFloatKeepService onStartCommand 调）：binder 解冻 + 主线程挂窗。 */
+    fun show(x: Int, y: Int, right: Int, bottom: Int) {
+        onShowMap(x, y, right, bottom)
+    }
+
+    /** 服务直投关闭入口（extra close=1）。 */
+    fun close() {
+        closeFloat()
+    }
+
 
     @Volatile private var app: Application? = null
     @Volatile private var topActivity: Activity? = null
@@ -232,6 +248,7 @@ object CarFloatHook {
             content = c
             ownersRef = owners
             floatingRect = intArrayOf(x, y, w, h)
+            isFloating.value = true
             reply(ACTION_FLOATED)
             Log.i(TAG, "悬浮成功 rect($x,$y,$w,$h)，已回 ACK")
         } catch (t: Throwable) {
@@ -272,6 +289,7 @@ object CarFloatHook {
         floatingRect = null
         originalParent = null
         ownersRef = null
+        isFloating.value = false
         if (box != null) {
             try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
             try { box.removeAllViews() } catch (_: Throwable) {}
@@ -297,6 +315,7 @@ object CarFloatHook {
         floatingRect = null
         originalParent = null
         ownersRef = null
+        isFloating.value = false
         if (box != null) {
             try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
             try { box.removeAllViews() } catch (_: Throwable) {}

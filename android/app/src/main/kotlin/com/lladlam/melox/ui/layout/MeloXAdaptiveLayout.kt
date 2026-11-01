@@ -48,7 +48,9 @@ fun rememberMeloXWindowInfo(): MeloXWindowInfo {
         else -> MeloXWindowWidthClass.Compact
     }
     // 见字段注释：宽度档位不足以判定播放页双栏，必须叠加高度门槛。
+    // 悬浮态强制单栏：播放页双栏右栏空态 = 大音乐图标（用户点名「右侧音乐图标」真凶）。
     val playerTwoPane = com.lladlam.melox.ui.settings.MeloXSettingsRuntime.splitScreenEnabled &&
+        !com.lladlam.melox.carfloat.CarFloatHook.isFloating.value &&
         width >= MeloXPlayerTwoPaneMinWidth.value.toInt() &&
         height >= MeloXPlayerTwoPaneMinHeight.value.toInt()
     return when (widthClass) {

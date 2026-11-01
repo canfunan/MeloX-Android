@@ -1,4 +1,4 @@
-﻿package com.lladlam.melox.ui
+package com.lladlam.melox.ui
 
 import android.app.Activity
 import android.content.Intent
@@ -255,7 +255,9 @@ fun MeloXApp(
     val context = hostContext.applicationContext
     val detailPaneState = (hostContext as? MeloXDetailPageOwner)?.detailPaneState
         ?: remember { MeloXDetailPaneState() }
-    val listDetailMode = meloXUsesListDetail(LocalWindowInfo.current.containerSize, MeloXSettingsRuntime.splitScreenEnabled)
+    // 悬浮态强制单栏（画框里双栏=挤成一团+右栏空态大图标，用户点名差评）
+    val listDetailMode = meloXUsesListDetail(LocalWindowInfo.current.containerSize, MeloXSettingsRuntime.splitScreenEnabled) &&
+        !com.lladlam.melox.carfloat.CarFloatHook.isFloating.value
     var selectedSource by remember {
         mutableStateOf(MusicProviderSelectionStore.selectedSource(context))
     }
