@@ -27,11 +27,6 @@ import android.util.Log
  */
 class CarFloatKeepService : Service() {
 
-    private companion object {
-        const val CH_ID = "melox_carfloat_keep"
-        const val NOTI_ID = 0xC8F1
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -70,6 +65,9 @@ class CarFloatKeepService : Service() {
     }
 
     companion object {
+        private const val CH_ID = "melox_carfloat_keep"
+        private const val NOTI_ID = 0xC8F1
+
         /** 应用前台时拉起（MainActivity.onCreate 调，前台启动 FGS 不受后台限制）。 */
         fun ensure(ctx: Context) {
             try {
