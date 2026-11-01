@@ -58,9 +58,9 @@ object CarFloatHook {
      * 悬浮窗口树的自持宿主：生命周期恒 RESUMED（宿主 Activity 在后台时悬浮 UI
      * 照常重组），SavedStateRegistry / ViewModelStore 就位（ComposeView 解析
      * recomposer 与 rememberSaveable 的硬性依赖）。
+     * SavedStateRegistryOwner extends LifecycleOwner —— 实现 lifecycle 一并满足。
      */
-    private class FloatOwners : androidx.lifecycle.LifecycleOwner,
-            androidx.savedstate.SavedStateRegistryOwner,
+    private class FloatOwners : androidx.savedstate.SavedStateRegistryOwner,
             androidx.lifecycle.ViewModelStoreOwner {
         private val registry = androidx.lifecycle.LifecycleRegistry(this)
         private val savedState = androidx.savedstate.SavedStateRegistryController.create(this)
@@ -71,10 +71,12 @@ object CarFloatHook {
             registry.currentState = androidx.lifecycle.Lifecycle.State.RESUMED
         }
 
-        override fun getLifecycle(): androidx.lifecycle.Lifecycle = registry
-        override fun getSavedStateRegistry(): androidx.savedstate.SavedStateRegistry =
-            savedState.savedStateRegistry
-        override fun getViewModelStore(): androidx.lifecycle.ViewModelStore = store
+        override val lifecycle: androidx.lifecycle.Lifecycle
+            get() = registry
+        override val savedStateRegistry: androidx.savedstate.SavedStateRegistry
+            get() = savedState.savedStateRegistry
+        override val viewModelStore: androidx.lifecycle.ViewModelStore
+            get() = store
     }
 
     fun install(application: Application) {
@@ -215,10 +217,11 @@ object CarFloatHook {
             // ComposeView attach 时解析 recomposer 直接 IllegalStateException
             // （实测崩点：悬浮成功 30ms 后进程死）。挂一套自持 RESUMED 的宿主，
             // 同时保证宿主 Activity 在后台时悬浮画面照常重组渲染。
+            // lifecycle 2.10 KMP：编译期只有 Kotlin 扩展函数（Java 静态类仅运行时兼容壳）
             val owners = FloatOwners()
-            androidx.lifecycle.ViewTreeLifecycleOwner.set(box, owners)
-            androidx.lifecycle.ViewTreeViewModelStoreOwner.set(box, owners)
-            androidx.savedstate.ViewTreeSavedStateRegistryOwner.set(box, owners)
+            androidx.lifecycle.setViewTreeLifecycleOwner(box, owners)
+            androidx.lifecycle.setViewTreeViewModelStoreOwner(box, owners)
+            androidx.savedstate.setViewTreeSavedStateRegistryOwner(box, owners)
             // 3) 容器挂系统悬浮窗（payload 同款参数：可聚焦，输入法可用）
             appWindowManager().addView(box, buildParams(x, y, w, h))
             container = box
