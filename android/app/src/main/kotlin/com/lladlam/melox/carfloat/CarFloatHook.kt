@@ -6,28 +6,32 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.res.Configuration
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.util.Log
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 
 /**
- * 车机悬浮协议（星环悬浮补丁同款，供「海鸥悬浮桌面」指挥）：
+ * 车机悬浮协议（逐字对齐星环注入器 payload 的 FloatWindow 权威实现，
+ * 反编译 assets/payload.dex → cn.kuwo.kwmusiccar.FloatWindow 逐条比对）：
  *
- *  · 收 com.autonavi.plus.showmap（extras x/y/w/h = 矩形，w/h 是右下角坐标，dpi）
- *    → 把当前前台 Activity 的 decorView 从 Activity 窗口摘出，挂成
- *      TYPE_APPLICATION_OVERLAY 系统悬浮窗（可触摸），成功后回
- *      cn.kuwo.plus.floated 广播（ACK，海鸥收到后槽卡让位）；
- *    摘不到界面（无前台 Activity）回 cn.kuwo.plus.noview。
- *  · 收 com.autonavi.plus.closemap → 收回悬浮窗，decorView 挂回 Activity 窗口。
- *  · 应用回前台（onActivityResumed）→ 自动收回悬浮（用户点海鸥把手拉起应用时，
- *    悬浮窗让位给全屏应用）；再回桌面海鸥会重发 showmap，自动再浮起来。
- *  · 同矩形重复 showmap 幂等丢弃（防布局回调连发把窗口一闪一闪）。
- *
- * 无需 manifest receiver（运行时注册，RECEIVER_EXPORTED 供跨应用广播）。
- * 海鸥侧协议见 seagull-floatdesktop AmapMapDirect / SlotCard。
+ *  · 摘【decor.getChildAt(0)】内容根 View —— decor 留在 Activity 窗口当空壳，
+ *    不破坏 Activity 的窗口关系链（直接搬 decor = "already been added" 实锤炸点）
+ *  · 自建 FrameLayout 容器挂 WindowManager（深色底），内容 remove 后塞进容器
+ *  · flags = 0x120（LAYOUT_IN_SCREEN | NOT_TOUCH_MODAL，**可聚焦** —— 输入法可用，
+ *    QQ/网易云注入版同款）；type = 2038（≥O）/ 2002；format = TRANSLUCENT
+ *  · 内容 setFitsSystemWindows(false) + 零 padding（去掉系统栏 inset 残留）
+ *  · closemap：内容 remove → 塞回【原父容器】（挂浮时记录的原 parent）
+ *  · resize：容器 updateViewLayout，内容 MATCH_PARENT 跟随（Compose 自动重排，
+ *    天然解决「拉伸掉挂」）
+ *  · 应用回前台（resume）→ 自动还原内容到窗口（用户全屏打开应用时的自然行为）
+ *  · 宿主销毁 → 容器摘除 + 全引用重置
  */
 object CarFloatHook {
 
@@ -38,30 +42,37 @@ object CarFloatHook {
     const val ACTION_FLOATED = "cn.kuwo.plus.floated"
     const val ACTION_NOVIEW = "cn.kuwo.plus.noview"
 
+    private const val FLAG_FLOAT = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL   // 0x120，payload 同款
+
+    /**
+     * 16:9 横屏布局规范（对标 QQ 音乐车机版风格）：悬浮矩形内内容强制 16:9
+     * 居中取景，容器深色底补边 —— 画框任何形状下 MeloX 都按标准车机横版渲染，
+     * Compose 按 16:9 宽度走 list-detail 双栏（width>height 恒成立）。
+     */
+    private fun fit169(w: Int, h: Int): IntArray =
+        if (w * 9 >= h * 16) intArrayOf(h * 16 / 9, h) else intArrayOf(w, w * 9 / 16)
+
     @Volatile private var app: Application? = null
     @Volatile private var topActivity: Activity? = null
-    @Volatile private var floatingView: View? = null
+    @Volatile private var container: FrameLayout? = null
+    @Volatile private var content: View? = null
+    @Volatile private var originalParent: ViewGroup? = null
     @Volatile private var floatingRect: IntArray? = null
-    @Volatile private var wmApp: WindowManager? = null
 
     fun install(application: Application) {
         app = application
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
                 topActivity = activity
-                // 应用回前台 → 自动收悬浮还窗（点海鸥把手/单击卡拉起时的自然行为）
-                if (floatingView != null) restoreToWindow()
+                // 应用回前台 → 内容还原回窗口（全屏使用）；海鸥随后重发 showmap 再浮
+                if (container != null) restoreContentToWindow()
             }
             override fun onActivityDestroyed(activity: Activity) {
                 if (topActivity === activity) topActivity = null
-                // 宿主销毁时还浮着 → decor 已无处可还，摘掉防泄漏
-                if (floatingView != null && activity.window?.decorView === floatingView) {
-                    try {
-                        appWindowManager().removeViewImmediate(floatingView!!)
-                    } catch (_: Throwable) {
-                    }
-                    floatingView = null
-                    floatingRect = null
+                // 宿主销毁：内容随 Activity 死亡，容器必须摘除 + 全引用重置（payload 同款）
+                if (container != null) {
+                    removeContainer()
                 }
             }
             override fun onActivityCreated(a: Activity, s: android.os.Bundle?) = Unit
@@ -75,13 +86,9 @@ object CarFloatHook {
             override fun onReceive(context: Context, intent: Intent) {
                 try {
                     when (intent.action) {
-                        ACTION_SHOW -> {
-                            val x = intent.getIntExtra("x", 0)
-                            val y = intent.getIntExtra("y", 0)
-                            val w = intent.getIntExtra("w", 0)
-                            val h = intent.getIntExtra("h", 0)
-                            onShowMap(x, y, w, h)
-                        }
+                        ACTION_SHOW -> onShowMap(
+                            intent.getIntExtra("x", 0), intent.getIntExtra("y", 0),
+                            intent.getIntExtra("w", 0), intent.getIntExtra("h", 0))
                         ACTION_CLOSE -> closeFloat()
                     }
                 } catch (t: Throwable) {
@@ -104,8 +111,7 @@ object CarFloatHook {
         } catch (t: Throwable) {
             Log.w(TAG, "协议注册失败: ${t.message}")
         }
-        // 保活前台服务：进程有 FGS 载体，冻结引擎不碰（无 root 方案的核心——
-        // greezer 冻结 = showmap 被 SKIPPED，实测 MeloX 裸进程秒冻协议全瘫）
+        // 无 root 保活：FGS 载体进程冻结引擎不碰（greezer 对裸进程秒冻 = showmap 被 SKIPPED）
         try {
             CarFloatKeepService.ensure(application)
         } catch (t: Throwable) {
@@ -113,21 +119,19 @@ object CarFloatHook {
         }
     }
 
-    /** showmap（w/h = 右下角坐标语义，海鸥按猴哥协议发）。 */
+    /** showmap。w/h = 右下角坐标语义（海鸥按猴哥协议发），先转宽高。 */
     private fun onShowMap(x: Int, y: Int, right: Int, bottom: Int) {
         val a = app ?: return reply(ACTION_NOVIEW)
 
-        // 无悬浮权限：正常用户路径 —— 自动跳系统授权页（用户点一次「允许」，
-        // 之后全程自动）。跳页前回 noview 让海鸥先收起槽卡别挡着授权对话框。
+        // 无悬浮权限（普通用户首次）：跳系统授权页点一次「允许」，之后全自动
         if (!canDrawOverlays(a)) {
             Log.i(TAG, "showmap：无悬浮权限，跳授权页")
             reply(ACTION_NOVIEW)
             try {
-                val i = Intent(
+                a.startActivity(Intent(
                     android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     android.net.Uri.parse("package:${a.packageName}")
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                a.startActivity(i)
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             } catch (t: Throwable) {
                 Log.w(TAG, "跳授权页失败: ${t.message}")
             }
@@ -138,141 +142,159 @@ object CarFloatHook {
         val h = bottom - y
         if (w <= 0 || h <= 0) return reply(ACTION_NOVIEW)
 
-        // 已在同矩形悬浮 → 幂等丢弃，重发 ACK（海鸥重挂后会再发一遍）
-        val cur = floatingRect
-        if (floatingView != null && cur != null &&
-            cur[0] == x && cur[1] == y && cur[2] == w && cur[3] == h) {
-            Log.i(TAG, "showmap 同矩形，幂等丢弃")
-            reply(ACTION_FLOATED)
+        val act = topActivity
+        val cur = content
+        // 已浮着：同矩形幂等（海鸥重挂会重发），矩形变化 → 容器直接 updateViewLayout
+        if (container != null && cur != null) {
+            val r = floatingRect
+            if (r != null && r[0] == x && r[1] == y && r[2] == w && r[3] == h) {
+                reply(ACTION_FLOATED)
+                return
+            }
+            try {
+                appWindowManager().updateViewLayout(container, buildParams(x, y, w, h))
+                // 内容同步到新矩形的 16:9 取景框
+                val fit = fit169(w, h)
+                cur.layoutParams = FrameLayout.LayoutParams(fit[0], fit[1], Gravity.CENTER)
+                floatingRect = intArrayOf(x, y, w, h)
+                reply(ACTION_FLOATED)
+                Log.i(TAG, "悬浮窗重定位 rect($x,$y,$w,$h) 16:9=${fit[0]}x${fit[1]}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "重定位失败: ${t.message}")
+                reply(ACTION_NOVIEW)
+            }
             return
         }
-
-        val decor = topActivity?.window?.decorView
-        if (decor == null) {
+        if (act == null || act.window == null) {
             Log.i(TAG, "showmap：无前台 Activity，回 noview")
             reply(ACTION_NOVIEW)
             return
         }
 
         try {
-            if (floatingView != null) {
-                // 已浮着但矩形变了：resize —— Compose 对尺寸变化会自己重排，
-                // 直接 updateViewLayout（位置+尺寸一起改）
-                val lp = buildParams(x, y, w, h)
-                appWindowManager().updateViewLayout(decor, lp)
-                floatingRect = intArrayOf(x, y, w, h)
-                reply(ACTION_FLOATED)
-                Log.i(TAG, "悬浮窗重定位 rect($x,$y,${x + w},${y + h})")
+            val c = findContent(act) ?: run {
+                Log.i(TAG, "showFloat: content not ready")
+                reply(ACTION_NOVIEW)
                 return
             }
-            // 摘出 Activity 窗口 → 挂成系统悬浮窗。
-            // ⚠ decor.parent 是 ViewRootImpl 不是 WindowManager（强转永远 null =
-            //   removeView 没执行 = addView 炸 "already been added"）。
-            // WindowManager 在同进程内是全局单例（WindowManagerGlobal），
-            // 用应用的 WindowManager 实例就能摘掉 Activity 窗口里的 decor。
-            try {
-                appWindowManager().removeViewImmediate(decor)
-            } catch (t: Throwable) {
-                Log.w(TAG, "摘窗异常（继续尝试挂悬浮）: ${t.message}")
+            val parent = c.parent as? ViewGroup
+            if (parent == null) {
+                reply(ACTION_NOVIEW)
+                return
             }
-            val lp = buildParams(x, y, w, h)
-            appWindowManager().addView(decor, lp)
-            floatingView = decor
+            // 1) 内容从原父容器摘出
+            parent.removeView(c)
+            originalParent = parent
+            // 2) 自建深色容器（QQ 车机风格底色），内容按 16:9 居中取景（车机规范）
+            val box = FrameLayout(act)
+            box.background = ColorDrawable(Color.parseColor("#0E1114"))
+            val fit = fit169(w, h)
+            box.addView(c, FrameLayout.LayoutParams(fit[0], fit[1], Gravity.CENTER))
+            // payload 同款收尾：去掉系统栏 inset 残留（悬浮矩形里内容要满幅）
+            c.fitsSystemWindows = false
+            c.setPadding(0, 0, 0, 0)
+            // 3) 容器挂系统悬浮窗（payload 同款参数：可聚焦，输入法可用）
+            appWindowManager().addView(box, buildParams(x, y, w, h))
+            container = box
+            content = c
             floatingRect = intArrayOf(x, y, w, h)
             reply(ACTION_FLOATED)
-            Log.i(TAG, "悬浮成功 rect($x,$y,${x + w},${y + h})，已回 ACK")
+            Log.i(TAG, "悬浮成功 rect($x,$y,$w,$h)，已回 ACK")
         } catch (t: Throwable) {
             Log.w(TAG, "悬浮失败: ${t.message}")
-            floatingView = null
-            floatingRect = null
-            // 失败要把 decor 还回去，应用别跟着黑掉
-            restoreToWindow()
+            // 失败把内容还回去，应用别黑掉
+            restoreContentToWindow()
             reply(ACTION_NOVIEW)
         }
     }
 
-    /** 收回悬浮：decor 挂回 Activity 窗口（回全屏可用）。 */
+    /** 内容根 = decor.getChildAt(0)（payload findContent 同款；decor 留守不搬）。 */
+    private fun findContent(act: Activity): View? {
+        return try {
+            val decor = act.window.decorView as? ViewGroup ?: return null
+            if (decor.childCount == 0) return null
+            decor.getChildAt(0)
+        } catch (t: Throwable) {
+            Log.w(TAG, "findContent: ${t.message}")
+            null
+        }
+    }
+
     private fun closeFloat() {
-        if (floatingView == null) {
+        if (container == null) {
             Log.i(TAG, "closemap: not floating")
             return
         }
-        restoreToWindow()
+        restoreContentToWindow()
     }
 
-    private fun restoreToWindow() {
-        val decor = floatingView ?: return
-        floatingView = null
+    /** 还原：内容 → 原父容器；容器摘除；全引用重置。 */
+    private fun restoreContentToWindow() {
+        val c = content
+        val box = container
+        val parent = originalParent
+        content = null
+        container = null
         floatingRect = null
-        try {
-            appWindowManager().removeViewImmediate(decor)
-        } catch (_: Throwable) {
+        originalParent = null
+        if (box != null) {
+            try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
+            try { box.removeAllViews() } catch (_: Throwable) {}
         }
-        // 还回 Activity 窗口：用 Activity window 的 attributes 重建窗口
-        val act = topActivity
-        if (act != null && act.window != null && decor.parent == null) {
+        if (c != null && parent != null) {
             try {
-                val attrs = act.window.attributes
-                (act.window).windowManager.addView(decor, attrs)
-                Log.i(TAG, "悬浮窗已还回 Activity 窗口")
-                return
+                parent.addView(c, ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                Log.i(TAG, "内容已还原回 Activity 窗口")
             } catch (t: Throwable) {
-                Log.w(TAG, "还窗失败（重建 Activity 兜底）: ${t.message}")
+                Log.w(TAG, "还原失败（重建兜底）: ${t.message}")
+                try { topActivity?.recreate() } catch (_: Throwable) {}
             }
-        }
-        // 没有活的 Activity 宿主（被 ROM 杀了/销毁了）→ decor 已无处可还，
-        // 直接丢弃引用；界面由 Activity 下次启动自然重建
-        if (act == null) {
-            Log.i(TAG, "无 Activity 宿主，悬浮 decor 丢弃（等下次启动重建界面）")
-        } else {
-            try {
-                act.recreate()
-            } catch (_: Throwable) {
-            }
+        } else if (c != null) {
+            try { topActivity?.recreate() } catch (_: Throwable) {}
         }
     }
 
-    private fun buildParams(x: Int, y: Int, w: Int, h: Int): WindowManager.LayoutParams {
-        val type = if (Build.VERSION.SDK_INT >= 26) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
+    private fun removeContainer() {
+        val box = container
+        content = null
+        container = null
+        floatingRect = null
+        originalParent = null
+        if (box != null) {
+            try { appWindowManager().removeViewImmediate(box) } catch (_: Throwable) {}
+            try { box.removeAllViews() } catch (_: Throwable) {}
         }
-        val lp = WindowManager.LayoutParams(
-            w, h, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = android.view.Gravity.START or android.view.Gravity.TOP
-        lp.x = x
-        lp.y = y
-        return lp
+        Log.i(TAG, "host destroyed, reset")
+    }
+
+    /** payload 同款：0x120 flags（可聚焦）、TRANSLUCENT、2038/2002、TOP|START。 */
+    private fun buildParams(x: Int, y: Int, w: Int, h: Int): WindowManager.LayoutParams {
+        val type = if (Build.VERSION.SDK_INT >= 26)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY   // 2038
+        else
+            @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE   // 2002
+        return WindowManager.LayoutParams(w, h, type, FLAG_FLOAT, PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.START
+            this.x = x
+            this.y = y
+            title = "MeloXFloat"
+        }
+    }
+
+    private fun appWindowManager(): WindowManager {
+        val a = app!!
+        return a.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     }
 
     private fun canDrawOverlays(ctx: Context): Boolean =
-        try {
-            android.provider.Settings.canDrawOverlays(ctx)
-        } catch (_: Throwable) {
-            false
-        }
-
-    private fun appWindowManager(): WindowManager {
-        wmApp?.let { return it }
-        val wm = app!!.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        wmApp = wm
-        return wm
-    }
+        try { android.provider.Settings.canDrawOverlays(ctx) } catch (_: Throwable) { false }
 
     private fun reply(action: String) {
         try {
             val a = app ?: return
-            // 隐式广播（不带包名）：海鸥的 ACK 接收器是运行时 RECEIVER_EXPORTED 注册，
-            // 星环原版协议同款 —— setPackage 到自己 = 只有自己收到，海鸥永远等不到 ACK
+            // 隐式广播（不带包名）：海鸥 ACK 接收器 RECEIVER_EXPORTED 注册，星环同款
             a.sendBroadcast(Intent(action))
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) {}
     }
 }
